@@ -242,130 +242,101 @@ local function ApplyEventRegistration()
 	end
 end
 
-local function CVarAutoLootOn()
-	if type(GetCVar) ~= "function" then return false end
-	local ok, v = pcall(GetCVar, "autoLootDefault")
-	return ok and (v == "1" or v == 1 or v == true)
-end
-
-local function LootModifierHeld()
-	if type(IsModifiedClick) == "function" then
-		local ok, held = pcall(IsModifiedClick, "AUTOLOOTTOGGLE")
-		if ok then return not not held end
-	end
-	return false
-end
-
-local function WouldAutoLoot()
-	local cvarOn, modHeld = CVarAutoLootOn(), LootModifierHeld()
-	local would = (cvarOn and not modHeld) or ((not cvarOn) and modHeld)
-	if db.fastLootCVarOnly then return would and cvarOn end
-	return would
-end
-
-local function PlayerIsMasterLooter()
-	if type(GetLootMethod) ~= "function" then return false, false end
-	local ok, method, partyML, raidML = pcall(GetLootMethod)
-	if not ok or method ~= "master" then return false, method == "master" end
-	if partyML == 0 then return true, true end
-	if raidML and type(GetRaidRosterInfo) == "function" and type(UnitName) == "function" then
-		local ok2, name = pcall(GetRaidRosterInfo, raidML)
-		if ok2 and name and UnitName("player") == name then return true, true end
-	end
-	return false, true
-end
-
-local function SlotEligible(index)
-	if type(GetLootSlotInfo) ~= "function" then return false end
-	local ok, texture, _, _, _, quality, locked = pcall(GetLootSlotInfo, index)
-	if not ok or not texture then
-		if type(LootSlotHasItem) ~= "function" then return false end
-		local ok2, has = pcall(LootSlotHasItem, index)
-		if not ok2 or not has then return false end
-	end
-	if locked then return false end
-	local isML, isMasterMethod = PlayerIsMasterLooter()
-	if isMasterMethod and not isML and type(GetLootThreshold) == "function" then
-		local okT, threshold = pcall(GetLootThreshold)
-		if okT and threshold and quality and quality >= threshold then return false end
-	end
-	return true
-end
-
-local function NextLootSlot()
-	if type(GetNumLootItems) ~= "function" or type(LootSlot) ~= "function" then return false end
-	for i = GetNumLootItems() or 0, 1, -1 do
-		if SlotEligible(i) then
-			pcall(LootSlot, i)
-			return true
-		end
-	end
-	return false
-end
-
-local function LootAllNow()
-	if type(GetNumLootItems) ~= "function" or type(LootSlot) ~= "function" then return end
-	for i = GetNumLootItems() or 0, 1, -1 do
-		if SlotEligible(i) then pcall(LootSlot, i) end
-	end
-end
-
-local function OnLoot()
-	if not db or not db.enabled or not db.fastLoot then return end
-	if IsShiftKeyDown and IsShiftKeyDown() then return end
-	if not WouldAutoLoot() then return end
-	lootGeneration = lootGeneration + 1
-	local gen = lootGeneration
-	if not (C_Timer and C_Timer.After) then
-		LootAllNow()
-		return
-	end
-	local ticks = 0
-	local function step()
-		if gen ~= lootGeneration then return end
-		ticks = ticks + 1
-		if ticks > LOOT_TICK_MAX then return end
-		if NextLootSlot() and ticks < LOOT_TICK_MAX then After(TICK, step) end
-	end
-	step()
-end
-
-local function DoRepair()
-	local result = { copper = 0, unaffordable = false }
-	if not db.repair then return result end
-	if type(CanMerchantRepair) == "function" then
-		local ok, can = pcall(CanMerchantRepair)
-		if not ok or not can then return result end
-	end
-	local cost
-	if type(GetRepairAllCost) == "function" then
-		local ok, c = pcall(GetRepairAllCost)
-		if ok then cost = c end
-	end
-	if not cost or cost == 0 then return result end
-	if db.guildRepair and type(CanGuildBankRepair) == "function" then
-		local ok, canGuild = pcall(CanGuildBankRepair)
-		if ok and canGuild then
-			SafeCall(RepairAllItems, true)
-			if type(GetRepairAllCost) == "function" then
-				local ok2, remain = pcall(GetRepairAllCost)
-				if ok2 then
-					if not remain or remain == 0 then
-						result.copper = cost
-						return result
+local function CollectJunk()
+	local list = {}
+	if not db.sellJunk then return list end
+	local exclude = db.excludeIds or {}
+	for bag = 0, MaxBagIndex() do
+		for slot = 1, BagSlotCount(bag) do
+			if #list >= SELL_CAP then return list end
+			local info = BagItemInfo(bag, slot)
+			local id = SlotItemID(bag, slot)
+			local link = SlotLink(bag, slot, info)
+			if not id and link then id = tonumber(tostring(link):match("item:(%d+)")) end
+			if id and not exclude[id] and not (info and info.isLocked) then
+				local quality = info and info.quality
+				if IsPoorQuality(id, link, quality) then
+					if not (info and info.hasNoValue) then
+						local price = info and info.sellPrice
+						if price == nil then price = ItemSellPrice(id, link) end
+						if price == nil or price > 0 then
+							local stacks = (info and info.stackCount) or 1
+							list[#list + 1] = { bag = bag, slot = slot, copper = (price or 0) * stacks }
+						end
 					end
-					result.copper = cost - remain
-					cost = remain
 				end
 			end
 		end
 	end
-	local money = PlayerMoney()
-	if money >= cost then
-		if not SafeCall(RepairAllItems, false) then SafeCall(RepairAllItems) end
-		result.copper = result.copper + cost
-	else
-		result.unaffordable = true
+	return list
+end
+
+local function PrintSummary(repairedCopper, soldCount, soldCopper, unaffordable)
+	if not db.summary then return end
+	if soldCount <= 0 and repairedCopper <= 0 and not unaffordable then return end
+	local parts = {}
+	if repairedCopper > 0 then
+		parts[#parts + 1] = "Repaired for " .. CoinString(repairedCopper)
+	elseif unaffordable then
+		parts[#parts + 1] = "cannot afford repair"
 	end
-	return result
+	if soldCount > 0 then
+		parts[#parts + 1] = "Sold " .. soldCount .. " junk for " .. CoinString(soldCopper)
+	end
+	Chat(table.concat(parts, ". ") .. ".")
+end
+
+local function PopupLooksLikeJunk(text)
+	if type(text) ~= "string" or text == "" then return false end
+	local lower = text:lower()
+	if lower:find("junk", 1, true) then return true end
+	local gs = _G.SELL_ALL_JUNK_ITEMS_POPUP or _G.SELL_ALL_JUNK_ITEMS
+	return gs and text == gs
+end
+
+local function AcceptJunkPopup()
+	if not db or not db.sellJunk then return false end
+	for i = 1, (STATICPOPUP_NUMDIALOGS or 4) do
+		local popup = _G["StaticPopup" .. i]
+		if popup and popup.IsShown and popup:IsShown() then
+			local text
+			if popup.text and popup.text.GetText then
+				text = popup.text:GetText()
+			elseif popup.GetText then
+				text = popup:GetText()
+			end
+			if PopupLooksLikeJunk(text) then
+				local btn = popup.button1 or _G["StaticPopup" .. i .. "Button1"]
+				if btn and btn.Click then
+					btn:Click()
+					return true
+				end
+				if type(StaticPopup_OnClick) == "function" then
+					pcall(StaticPopup_OnClick, popup, 1)
+					return true
+				end
+			end
+		end
+	end
+	return false
+end
+
+local function ClickBlizzardSellJunk()
+	local btn = MerchantFrameSellAllJunkButton
+		or (MerchantFrame and (MerchantFrame.SellAllJunkButton or MerchantFrame.sellAllJunkButton))
+	if btn and btn.Click then
+		pcall(function() btn:Click() end)
+		return true
+	end
+	if type(MerchantFrame_OnSellAllJunkButtonClicked) == "function" then
+		return SafeCall(MerchantFrame_OnSellAllJunkButtonClicked, btn)
+	end
+	return false
+end
+
+local function BulkSellJunk()
+	if C_MerchantFrame and C_MerchantFrame.SellAllJunkItems then
+		return SafeCall(C_MerchantFrame.SellAllJunkItems)
+	end
+	return false
 end
