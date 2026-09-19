@@ -2,7 +2,7 @@
 
 World of Warcraft: Forever addon — fast loot, sell junk, auto-repair.
 
-Version **1.0.0**. No libraries. Event-driven only.
+Version **1.0.1**. No libraries. Event-driven only.
 
 ## Install
 
@@ -39,7 +39,7 @@ Each release is committed on `main` and snapshotted on a `vX.Y.Z` branch. The TO
 
 ## Scope (v1)
 
-In scope: fast loot, grey sell (max 11 per visit), repair, classic options panel.
+In scope: fast loot, grey sell, repair, classic options panel.
 
 Out of scope: auto-quest, auto-gossip, auto-res, minimap button, selling greens/whites, combat meters.
 
