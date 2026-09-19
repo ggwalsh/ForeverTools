@@ -2,7 +2,7 @@
 
 World of Warcraft: Forever addon — fast loot, sell junk, auto-repair.
 
-Version **1.0.1**. No libraries. Event-driven only.
+Version **1.0.2**. No libraries. Event-driven only.
 
 ## Install
 
@@ -19,6 +19,8 @@ The folder must contain only:
 
 Restart the client (or `/reload` after the first copy). Open settings with `/ft` or `/forevertools`.
 
+If the addon shows as out of date, enable **Load out of date AddOns**. The TOC targets Forever beta `16001` (and `120105`).
+
 ## Defaults
 
 | Toggle | Default |
@@ -32,6 +34,10 @@ Restart the client (or `/reload` after the first copy). Open settings with `/ft`
 | Print summary in chat | On |
 
 Hold **Shift** when opening a vendor or corpse to skip automation once.
+
+## Sell junk
+
+Opens a vendor → greys are sold automatically. This uses the same `C_MerchantFrame.SellAllJunkItems` call as the vendor **Sell Junk** button, **without** the confirmation dialog. Hold Shift while talking to the vendor to skip.
 
 ## Versioning
 

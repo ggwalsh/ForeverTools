@@ -1,8 +1,8 @@
-## Interface: 120105
+## Interface: 16001, 120105
 ## Title: ForeverTools
 ## Notes: Fast loot, sell junk, auto-repair. Toggleable. No libraries.
 ## Author: Geoff Walsh
-## Version: 1.0.1
+## Version: 1.0.2
 ## SavedVariables: ForeverToolsDB
 
 ForeverTools.lua
