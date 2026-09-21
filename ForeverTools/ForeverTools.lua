@@ -1,4 +1,4 @@
--- ForeverTools 1.0.2. Forever beta Interface 16001; 120105 kept for Midnight-family clients.
+-- ForeverTools 1.0.3. Forever beta Interface 16001; 120105 kept for Midnight-family clients.
 
 local ADDON_NAME = "ForeverTools"
 local SELL_CAP, LOOT_TICK_MAX, TICK = 11, 40, 0.05
@@ -7,6 +7,7 @@ local db, optionsFrame
 local sellGeneration, lootGeneration = 0, 0
 local merchantOpen, sellBusy = false, false
 local junkHooked = false
+local lootAttempted, lootTicking = {}, false
 
 local defaults = {
 	enabled = true,
@@ -239,7 +240,8 @@ local function HasExcludeIds()
 end
 
 local FEATURE_EVENTS = {
-	"LOOT_READY", "LOOT_OPENED", "MERCHANT_SHOW", "MERCHANT_CLOSED",
+	"LOOT_READY", "LOOT_OPENED", "LOOT_CLOSED", "UI_ERROR_MESSAGE",
+	"MERCHANT_SHOW", "MERCHANT_CLOSED",
 	"PLAYER_INTERACTION_MANAGER_FRAME_SHOW", "PLAYER_INTERACTION_MANAGER_FRAME_HIDE",
 }
 
@@ -247,7 +249,7 @@ local function ApplyEventRegistration()
 	for i = 1, #FEATURE_EVENTS do pcall(frame.UnregisterEvent, frame, FEATURE_EVENTS[i]) end
 	if not db or not db.enabled then return end
 	local function reg(name) pcall(frame.RegisterEvent, frame, name) end
-	if db.fastLoot then reg("LOOT_READY") reg("LOOT_OPENED") end
+	if db.fastLoot then reg("LOOT_READY") reg("LOOT_OPENED") reg("LOOT_CLOSED") reg("UI_ERROR_MESSAGE") end
 	if db.sellJunk or db.repair then
 		reg("MERCHANT_SHOW") reg("MERCHANT_CLOSED")
 		reg("PLAYER_INTERACTION_MANAGER_FRAME_SHOW")
@@ -310,7 +312,8 @@ end
 local function NextLootSlot()
 	if type(GetNumLootItems) ~= "function" or type(LootSlot) ~= "function" then return false end
 	for i = GetNumLootItems() or 0, 1, -1 do
-		if SlotEligible(i) then
+		if not lootAttempted[i] and SlotEligible(i) then
+			lootAttempted[i] = true
 			pcall(LootSlot, i)
 			return true
 		end
@@ -318,29 +321,25 @@ local function NextLootSlot()
 	return false
 end
 
-local function LootAllNow()
-	if type(GetNumLootItems) ~= "function" or type(LootSlot) ~= "function" then return end
-	for i = GetNumLootItems() or 0, 1, -1 do
-		if SlotEligible(i) then pcall(LootSlot, i) end
-	end
+local function ResetLoot()
+	lootGeneration = lootGeneration + 1
+	lootTicking = false
+	lootAttempted = {}
 end
 
 local function OnLoot()
 	if not db or not db.enabled or not db.fastLoot then return end
 	if IsShiftKeyDown and IsShiftKeyDown() then return end
-	if not WouldAutoLoot() then return end
+	if not WouldAutoLoot() or lootTicking then return end
+	if not (C_Timer and C_Timer.After) then while NextLootSlot() do end return end
 	lootGeneration = lootGeneration + 1
 	local gen = lootGeneration
-	if not (C_Timer and C_Timer.After) then
-		LootAllNow()
-		return
-	end
+	lootTicking = true
 	local ticks = 0
 	local function step()
-		if gen ~= lootGeneration then return end
+		if gen ~= lootGeneration then lootTicking = false return end
 		ticks = ticks + 1
-		if ticks > LOOT_TICK_MAX then return end
-		if NextLootSlot() and ticks < LOOT_TICK_MAX then After(TICK, step) end
+		if ticks <= LOOT_TICK_MAX and NextLootSlot() then After(TICK, step) else lootTicking = false end
 	end
 	step()
 end
@@ -776,12 +775,20 @@ local function OnAddonLoaded(name)
 end
 
 frame:RegisterEvent("ADDON_LOADED")
-frame:SetScript("OnEvent", function(_, event, arg1)
+frame:SetScript("OnEvent", function(_, event, arg1, arg2)
 	if event == "ADDON_LOADED" then
 		OnAddonLoaded(arg1)
 		if arg1 == "Blizzard_UIPanels_Game" then HookJunkConfirm() end
 	elseif event == "LOOT_READY" or event == "LOOT_OPENED" then
 		OnLoot()
+	elseif event == "LOOT_CLOSED" then
+		ResetLoot()
+	elseif event == "UI_ERROR_MESSAGE" and lootTicking and arg2 == ERR_INV_FULL then
+		lootGeneration = lootGeneration + 1
+		lootTicking = false
+		if type(GetNumLootItems) == "function" then
+			for i = 1, GetNumLootItems() or 0 do lootAttempted[i] = true end
+		end
 	elseif event == "MERCHANT_SHOW" then
 		OnMerchantShow()
 	elseif event == "PLAYER_INTERACTION_MANAGER_FRAME_SHOW" then

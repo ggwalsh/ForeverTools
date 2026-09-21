@@ -2,7 +2,7 @@
 
 World of Warcraft: Forever addon — fast loot, sell junk, auto-repair.
 
-Version **1.0.2**. No libraries. Event-driven only.
+Version **1.0.3**. No libraries. Event-driven only.
 
 ## Install
 

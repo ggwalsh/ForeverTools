@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.3 — 2026-09-21
+
+- Fast loot takes each corpse slot once. It no longer retries every 0.05s when bags are full
+- Inventory-full error stops the loot pass for that window; slots reset on `LOOT_CLOSED`
+
 ## 1.0.2 — 2026-09-19
 
 - Auto-sell junk uses `C_MerchantFrame.SellAllJunkItems` (the same call as the vendor Sell Junk confirm) so greys vendor without the confirmation click
