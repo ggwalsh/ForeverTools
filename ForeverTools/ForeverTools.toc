@@ -1,8 +1,9 @@
 ## Interface: 16001, 120105
 ## Title: ForeverTools
-## Notes: Fast loot, sell junk, auto-repair. Toggleable. No libraries.
+## Notes: Fast loot, sell junk, auto-repair, party quests. Toggleable. No libraries.
 ## Author: Geoff Walsh
-## Version: 1.0.3
+## Version: 1.1.0
+## OptionalDeps: ForeverParty
 ## SavedVariables: ForeverToolsDB
 
 ForeverTools.lua

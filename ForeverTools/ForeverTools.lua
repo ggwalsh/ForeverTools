@@ -1,4 +1,4 @@
--- ForeverTools 1.0.3. Forever beta Interface 16001; 120105 kept for Midnight-family clients.
+-- ForeverTools 1.1.0. Forever beta Interface 16001; 120105 kept for Midnight-family clients.
 
 local ADDON_NAME = "ForeverTools"
 local SELL_CAP, LOOT_TICK_MAX, TICK = 11, 40, 0.05
@@ -8,6 +8,7 @@ local sellGeneration, lootGeneration = 0, 0
 local merchantOpen, sellBusy = false, false
 local junkHooked = false
 local lootAttempted, lootTicking = {}, false
+local snapshot, sharedInLog, pendingFromParty, shareQueued, shareAttempts = {}, {}, {}, {}, {}
 
 local defaults = {
 	enabled = true,
@@ -18,6 +19,10 @@ local defaults = {
 	guildRepair = false,
 	summary = true,
 	excludeIds = {},
+	autoAccept = true,
+	autoShare = true,
+	autoTurnin = true,
+	announce = true,
 }
 
 local frame = CreateFrame("Frame", "ForeverToolsFrame")
@@ -243,6 +248,9 @@ local FEATURE_EVENTS = {
 	"LOOT_READY", "LOOT_OPENED", "LOOT_CLOSED", "UI_ERROR_MESSAGE",
 	"MERCHANT_SHOW", "MERCHANT_CLOSED",
 	"PLAYER_INTERACTION_MANAGER_FRAME_SHOW", "PLAYER_INTERACTION_MANAGER_FRAME_HIDE",
+	"QUEST_DETAIL", "QUEST_ACCEPT_CONFIRM", "GOSSIP_SHOW", "QUEST_GREETING",
+	"QUEST_ACCEPTED", "QUEST_PROGRESS", "QUEST_COMPLETE",
+	"QUEST_WATCH_UPDATE", "QUEST_LOG_UPDATE", "UNIT_QUEST_LOG_CHANGED",
 }
 
 local function ApplyEventRegistration()
@@ -254,6 +262,11 @@ local function ApplyEventRegistration()
 		reg("MERCHANT_SHOW") reg("MERCHANT_CLOSED")
 		reg("PLAYER_INTERACTION_MANAGER_FRAME_SHOW")
 		reg("PLAYER_INTERACTION_MANAGER_FRAME_HIDE")
+	end
+	if db.autoAccept or db.autoShare or db.autoTurnin or db.announce then
+		reg("QUEST_DETAIL") reg("QUEST_ACCEPT_CONFIRM") reg("GOSSIP_SHOW") reg("QUEST_GREETING")
+		reg("QUEST_ACCEPTED") reg("QUEST_PROGRESS") reg("QUEST_COMPLETE")
+		reg("QUEST_WATCH_UPDATE") reg("QUEST_LOG_UPDATE") reg("UNIT_QUEST_LOG_CHANGED")
 	end
 end
 
@@ -580,6 +593,322 @@ local function OnMerchantClosed()
 	sellGeneration = sellGeneration + 1
 end
 
+local function ShiftSkip()
+	return IsShiftKeyDown and IsShiftKeyDown()
+end
+
+local function InGroup()
+	return IsInGroup and IsInGroup()
+end
+
+local function PartyChannel()
+	if IsInRaid and IsInRaid() then return "RAID" end
+	if InGroup() then return "PARTY" end
+end
+
+local function Say(msg)
+	if not msg or msg == "" then return end
+	local ch = PartyChannel()
+	if not ch then return end
+	local ok = pcall(function()
+		if C_ChatInfo and C_ChatInfo.SendChatMessage then
+			C_ChatInfo.SendChatMessage(msg, ch)
+		elseif SendChatMessage then
+			SendChatMessage(msg, ch)
+		end
+	end)
+	if not ok then Chat(msg) end
+end
+
+local function CurrentQuestID()
+	if type(GetQuestID) ~= "function" then return end
+	local ok, id = pcall(GetQuestID)
+	id = AsNumber(id)
+	if id and id > 0 then return id end
+end
+
+local function IsOnQuest(questID)
+	if not questID then return false end
+	if C_QuestLog and C_QuestLog.IsOnQuest then
+		local ok, v = pcall(C_QuestLog.IsOnQuest, questID)
+		return ok and v and true or false
+	end
+	if C_QuestLog and C_QuestLog.GetLogIndexForQuestID then
+		local ok, idx = pcall(C_QuestLog.GetLogIndexForQuestID, questID)
+		return ok and idx and idx > 0
+	end
+	return false
+end
+
+local function QuestLogIsFull()
+	if not (C_QuestLog and C_QuestLog.GetMaxNumQuestsCanAccept and C_QuestLog.GetNumQuestLogEntries and C_QuestLog.GetInfo) then
+		return false
+	end
+	local okM, maxAccept = pcall(C_QuestLog.GetMaxNumQuestsCanAccept)
+	maxAccept = AsNumber(maxAccept)
+	if not okM or not maxAccept or maxAccept <= 0 then return false end
+	local okN, num = pcall(C_QuestLog.GetNumQuestLogEntries)
+	num = AsNumber(num) or 0
+	local n = 0
+	for i = 1, num do
+		local ok, info = pcall(C_QuestLog.GetInfo, i)
+		if ok and info and not info.isHeader then n = n + 1 end
+	end
+	return n >= maxAccept
+end
+
+local function QuestTitle(questID)
+	if C_QuestLog and C_QuestLog.GetTitleForQuestID then
+		local ok, title = pcall(C_QuestLog.GetTitleForQuestID, questID)
+		if ok and title and title ~= "" then return title end
+	end
+	return "Quest"
+end
+
+local function QuestReady(questID)
+	if not questID then return false end
+	if C_QuestLog and C_QuestLog.ReadyForTurnIn then
+		local ok, v = pcall(C_QuestLog.ReadyForTurnIn, questID)
+		if ok then return not not v end
+	end
+	if C_QuestLog and C_QuestLog.IsComplete then
+		local ok, v = pcall(C_QuestLog.IsComplete, questID)
+		if ok then return not not v end
+	end
+	return false
+end
+
+local function ObjectiveFull(obj)
+	if not obj then return false end
+	if Plain(obj.finished) then return true end
+	local filled, need = AsNumber(obj.numFulfilled), AsNumber(obj.numRequired)
+	if filled and need and need > 0 and filled >= need then return true end
+	local text = obj.text
+	if type(text) == "string" then
+		local a, b = text:match("(%d+)%s*/%s*(%d+)")
+		if a and b then
+			a, b = tonumber(a), tonumber(b)
+			if b and b > 0 and a and a >= b then return true end
+		end
+	end
+	return false
+end
+
+local function AcceptCurrentQuest()
+	if not db.autoAccept or ShiftSkip() then return end
+	local qid = CurrentQuestID()
+	if qid and IsOnQuest(qid) then return end
+	if QuestLogIsFull() then return end
+	if type(QuestGetAutoAccept) == "function" then
+		local ok, auto = pcall(QuestGetAutoAccept)
+		if ok and auto then
+			if CloseQuest then pcall(CloseQuest) end
+			return
+		end
+	end
+	if AcceptQuest then pcall(AcceptQuest) end
+end
+
+local function GossipPickAvailable()
+	if not db.autoAccept or ShiftSkip() or QuestLogIsFull() then return end
+	if not (C_GossipInfo and C_GossipInfo.GetAvailableQuests and C_GossipInfo.SelectAvailableQuest) then return end
+	local ok, available = pcall(C_GossipInfo.GetAvailableQuests)
+	if not ok or not available or not available[1] then return end
+	local pick
+	for i = 1, #available do
+		local q = available[i]
+		local questID = q and (q.questID or q.questId)
+		if not questID or not IsOnQuest(questID) then pick = q break end
+	end
+	if not pick then return end
+	local questID = pick.questID or pick.questId
+	if questID then
+		if not pcall(C_GossipInfo.SelectAvailableQuest, questID) then
+			pcall(C_GossipInfo.SelectAvailableQuest, 1)
+		end
+	else
+		pcall(C_GossipInfo.SelectAvailableQuest, 1)
+	end
+end
+
+local function GreetingPickAvailable()
+	if not db.autoAccept or ShiftSkip() or QuestLogIsFull() then return end
+	local n = GetNumAvailableQuests and GetNumAvailableQuests() or 0
+	if n > 0 and SelectAvailableQuest then pcall(SelectAvailableQuest, 1) end
+end
+
+local function GossipPickComplete()
+	if not db.autoTurnin or ShiftSkip() then return false end
+	if not (C_GossipInfo and C_GossipInfo.GetActiveQuests and C_GossipInfo.SelectActiveQuest) then return false end
+	local ok, active = pcall(C_GossipInfo.GetActiveQuests)
+	if not ok or not active then return false end
+	for i = 1, #active do
+		local q = active[i]
+		if q then
+			local questID = q.questID or q.questId
+			if Plain(q.isComplete) or Plain(q.IsComplete) or QuestReady(questID) then
+				if questID then
+					if not pcall(C_GossipInfo.SelectActiveQuest, questID) then
+						pcall(C_GossipInfo.SelectActiveQuest, i)
+					end
+				else
+					pcall(C_GossipInfo.SelectActiveQuest, i)
+				end
+				return true
+			end
+		end
+	end
+	return false
+end
+
+local function GreetingPickComplete()
+	if not db.autoTurnin or ShiftSkip() then return false end
+	local n = GetNumActiveQuests and GetNumActiveQuests() or 0
+	if n <= 0 or not SelectActiveQuest then return false end
+	for i = 1, n do
+		local isComplete
+		if GetActiveTitle then
+			local okT, _, complete = pcall(GetActiveTitle, i)
+			if okT then isComplete = Plain(complete) end
+		end
+		if not isComplete and GetActiveQuestID then
+			local okQ, qid = pcall(GetActiveQuestID, i)
+			if okQ then isComplete = QuestReady(AsNumber(qid) or qid) end
+		end
+		if isComplete then
+			pcall(SelectActiveQuest, i)
+			return true
+		end
+	end
+	return false
+end
+
+local function ProgressTurnin()
+	if not db.autoTurnin or ShiftSkip() then return end
+	if IsQuestCompletable and IsQuestCompletable() and CompleteQuest then pcall(CompleteQuest) end
+end
+
+local function CompleteTurnin()
+	if not db.autoTurnin or ShiftSkip() then return end
+	local choices = GetNumQuestChoices and GetNumQuestChoices() or 0
+	if choices > 1 or not GetQuestReward then return end
+	pcall(GetQuestReward, choices == 1 and 1 or 0)
+end
+
+local function ShareQuestID(questID)
+	shareQueued[questID] = nil
+	if not db.autoShare or not questID then return end
+	if sharedInLog[questID] then return end
+	if pendingFromParty[questID] then
+		pendingFromParty[questID] = nil
+		sharedInLog[questID] = true
+		return
+	end
+	if not InGroup() then sharedInLog[questID] = true return end
+	if not IsOnQuest(questID) then
+		local n = (shareAttempts[questID] or 0) + 1
+		shareAttempts[questID] = n
+		if n <= 4 then
+			shareQueued[questID] = true
+			After(0.4, function() ShareQuestID(questID) end)
+			return
+		end
+		sharedInLog[questID] = true
+		shareAttempts[questID] = nil
+		return
+	end
+	if C_QuestLog and C_QuestLog.IsPushableQuest then
+		local ok, push = pcall(C_QuestLog.IsPushableQuest, questID)
+		if ok and not push then
+			sharedInLog[questID] = true
+			shareAttempts[questID] = nil
+			return
+		end
+	end
+	sharedInLog[questID] = true
+	shareAttempts[questID] = nil
+	if C_QuestLog and C_QuestLog.SetSelectedQuest then pcall(C_QuestLog.SetSelectedQuest, questID) end
+	if QuestLogPushQuest then pcall(QuestLogPushQuest) end
+end
+
+local function ScanAndAnnounce()
+	if not db or not C_QuestLog or not C_QuestLog.GetNumQuestLogEntries or not C_QuestLog.GetInfo then return end
+	local okN, num = pcall(C_QuestLog.GetNumQuestLogEntries)
+	num = AsNumber(num) or 0
+	if not okN then return end
+	local seen = {}
+	for i = 1, num do
+		local ok, info = pcall(C_QuestLog.GetInfo, i)
+		if ok and info and not info.isHeader and info.questID then
+			local qid = info.questID
+			seen[qid] = true
+			local objectives
+			if C_QuestLog.GetQuestObjectives then
+				local okO, objs = pcall(C_QuestLog.GetQuestObjectives, qid)
+				if okO then objectives = objs end
+			end
+			if objectives then
+				local prev = snapshot[qid] or {}
+				local nextSnap = {}
+				for idx, obj in ipairs(objectives) do
+					local full = ObjectiveFull(obj)
+					nextSnap[idx] = { full = full, text = Plain(obj.text) or obj.text }
+					local was = prev[idx]
+					if db.announce and full and was and not was.full and InGroup() then
+						local text = Plain(obj.text)
+						if type(text) ~= "string" or text == "" then text = "Objective complete" end
+						Say(string.format("[%s] %s", QuestTitle(qid), text))
+					end
+				end
+				snapshot[qid] = nextSnap
+			end
+		end
+	end
+	for qid in pairs(snapshot) do
+		if not seen[qid] then
+			snapshot[qid], sharedInLog[qid], pendingFromParty[qid] = nil, nil, nil
+			shareQueued[qid], shareAttempts[qid] = nil, nil
+		end
+	end
+	for qid in pairs(sharedInLog) do
+		if not seen[qid] then sharedInLog[qid] = nil end
+	end
+end
+
+local function OnQuestEvent(event, arg1, arg2)
+	if not db or not db.enabled then return end
+	if event == "QUEST_DETAIL" then
+		local qid = CurrentQuestID()
+		if qid and QuestIsFromParty and QuestIsFromParty() then pendingFromParty[qid] = true end
+		AcceptCurrentQuest()
+	elseif event == "QUEST_ACCEPT_CONFIRM" then
+		if db.autoAccept and not ShiftSkip() and ConfirmAcceptQuest then pcall(ConfirmAcceptQuest) end
+	elseif event == "GOSSIP_SHOW" then
+		if not GossipPickComplete() then GossipPickAvailable() end
+	elseif event == "QUEST_GREETING" then
+		if not GreetingPickComplete() then GreetingPickAvailable() end
+	elseif event == "QUEST_PROGRESS" then
+		ProgressTurnin()
+	elseif event == "QUEST_COMPLETE" then
+		CompleteTurnin()
+	elseif event == "QUEST_ACCEPTED" then
+		local questID = AsNumber(arg2) or AsNumber(arg1)
+		if not questID then return end
+		if sharedInLog[questID] or shareQueued[questID] then return end
+		if pendingFromParty[questID] then
+			pendingFromParty[questID] = nil
+			sharedInLog[questID] = true
+			return
+		end
+		shareQueued[questID] = true
+		After(0.6, function() ShareQuestID(questID) end)
+	elseif event == "QUEST_WATCH_UPDATE" or event == "QUEST_LOG_UPDATE" then
+		ScanAndAnnounce()
+	elseif event == "UNIT_QUEST_LOG_CHANGED" and arg1 == "player" then
+		ScanAndAnnounce()
+	end
+end
+
 local function ExcludeToText(map)
 	local ids = {}
 	if type(map) == "table" then
@@ -731,6 +1060,12 @@ local function CreateOptions()
 	end)
 	y = y - 36
 
+	AddHeader("Party")
+	local cAccept = AddCheck("Auto-accept quests", "autoAccept", "Accept quests from NPCs and party shares. Hold Shift at the NPC to skip.")
+	local cShare = AddCheck("Share quests with party", "autoShare", "Push a quest once when you pick it up from an NPC. Does not re-share party quests.")
+	local cTurn = AddCheck("Auto-turn-in quests", "autoTurnin", "Turn in completed quests. Stops if you must choose a reward. Hold Shift to skip.")
+	local cAnn = AddCheck("Announce objectives", "announce", "Print in party or raid chat when a quest objective is full.")
+
 	AddHeader("General")
 	local cEnable = AddCheck("Enable ForeverTools", "enabled", "Master switch. Turns off all events when unchecked.")
 
@@ -739,11 +1074,11 @@ local function CreateOptions()
 	footer:SetPoint("RIGHT", child, "RIGHT", -8, 0)
 	footer:SetJustifyH("LEFT")
 	if footer.SetWordWrap then footer:SetWordWrap(true) end
-	footer:SetText("Hold Shift when opening a vendor or corpse to skip once.")
+	footer:SetText("Hold Shift when opening a vendor, corpse, or quest NPC to skip once.")
 	y = y - 40
 	child:SetHeight(math.max(400, -y + 16))
 
-	local checks = { cFast, cCVar, cSell, cRepair, cGuild, cSum, cEnable }
+	local checks = { cFast, cCVar, cSell, cRepair, cGuild, cSum, cAccept, cShare, cTurn, cAnn, cEnable }
 	panel:SetScript("OnShow", function()
 		for i = 1, #checks do
 			local c = checks[i]
@@ -761,9 +1096,66 @@ local function ToggleOptions()
 	if panel:IsShown() then panel:Hide() else panel:Show() end
 end
 
+local PARTY_SLASH = {
+	accept = { "autoAccept", "auto-accept" },
+	share = { "autoShare", "auto-share" },
+	turnin = { "autoTurnin", "auto-turn-in" },
+	turn = { "autoTurnin", "auto-turn-in" },
+	announce = { "announce", "objective announce" },
+	say = { "announce", "objective announce" },
+}
+
+local function PartyStatus()
+	if not db then return end
+	Chat(string.format("accept %s   share %s   turnin %s   announce %s",
+		db.autoAccept and "on" or "off",
+		db.autoShare and "on" or "off",
+		db.autoTurnin and "on" or "off",
+		db.announce and "on" or "off"))
+end
+
+local function OnSlash(msg)
+	msg = string.lower((msg or ""):gsub("^%s+", ""):gsub("%s+$", ""))
+	if msg == "status" or msg == "help" then
+		PartyStatus()
+		return
+	end
+	local spec = PARTY_SLASH[msg]
+	if spec and db then
+		local key = spec[1]
+		db[key] = not db[key]
+		PlayCheckSound(db[key])
+		ApplyEventRegistration()
+		Chat(spec[2] .. " " .. (db[key] and "on" or "off"))
+		return
+	end
+	ToggleOptions()
+end
+
+local function ForeverPartyLoaded()
+	if C_AddOns and C_AddOns.IsAddOnLoaded then
+		local ok, v = pcall(C_AddOns.IsAddOnLoaded, "ForeverParty")
+		if ok and v then return true end
+	end
+	if type(IsAddOnLoaded) == "function" then
+		local ok, v = pcall(IsAddOnLoaded, "ForeverParty")
+		if ok and v then return true end
+	end
+	return false
+end
+
 local function OnAddonLoaded(name)
 	if name ~= ADDON_NAME then return end
 	if type(ForeverToolsDB) ~= "table" then ForeverToolsDB = {} end
+	if type(ForeverPartyDB) == "table" then
+		local keys = { "autoAccept", "autoShare", "autoTurnin", "announce" }
+		for i = 1, #keys do
+			local k = keys[i]
+			if ForeverToolsDB[k] == nil and ForeverPartyDB[k] ~= nil then
+				ForeverToolsDB[k] = not not ForeverPartyDB[k]
+			end
+		end
+	end
 	CopyDefaults(ForeverToolsDB, defaults)
 	if type(ForeverToolsDB.excludeIds) ~= "table" then ForeverToolsDB.excludeIds = {} end
 	db = ForeverToolsDB
@@ -771,7 +1163,12 @@ local function OnAddonLoaded(name)
 	HookJunkConfirm()
 	SLASH_FOREVERTOOLS1 = "/ft"
 	SLASH_FOREVERTOOLS2 = "/forevertools"
-	SlashCmdList["FOREVERTOOLS"] = ToggleOptions
+	SLASH_FOREVERTOOLS3 = "/fp"
+	SLASH_FOREVERTOOLS4 = "/foreverparty"
+	SlashCmdList["FOREVERTOOLS"] = OnSlash
+	if ForeverPartyLoaded() then
+		Chat("Disable the ForeverParty addon folder — those features now live here.")
+	end
 end
 
 frame:RegisterEvent("ADDON_LOADED")
@@ -795,5 +1192,10 @@ frame:SetScript("OnEvent", function(_, event, arg1, arg2)
 		if IsMerchantArg(arg1) then OnMerchantShow() end
 	elseif event == "MERCHANT_CLOSED" or event == "PLAYER_INTERACTION_MANAGER_FRAME_HIDE" then
 		if event == "MERCHANT_CLOSED" or IsMerchantArg(arg1) then OnMerchantClosed() end
+	elseif event == "QUEST_DETAIL" or event == "QUEST_ACCEPT_CONFIRM" or event == "GOSSIP_SHOW"
+		or event == "QUEST_GREETING" or event == "QUEST_ACCEPTED" or event == "QUEST_PROGRESS"
+		or event == "QUEST_COMPLETE" or event == "QUEST_WATCH_UPDATE" or event == "QUEST_LOG_UPDATE"
+		or event == "UNIT_QUEST_LOG_CHANGED" then
+		OnQuestEvent(event, arg1, arg2)
 	end
 end)

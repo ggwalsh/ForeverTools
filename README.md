@@ -1,8 +1,8 @@
 # ForeverTools
 
-World of Warcraft: Forever addon — fast loot, sell junk, auto-repair.
+World of Warcraft: Forever addon — fast loot, sell junk, auto-repair, party quests.
 
-Version **1.0.3**. No libraries. Event-driven only.
+Version **1.1.0**. No libraries. Event-driven only. Two files.
 
 ## Install
 
@@ -17,7 +17,9 @@ The folder must contain only:
 - `ForeverTools.toc`
 - `ForeverTools.lua`
 
-Restart the client (or `/reload` after the first copy). Open settings with `/ft` or `/forevertools`.
+**Disable or delete `Interface/AddOns/ForeverParty`.** Those features now live in ForeverTools. Leaving both enabled double-accepts quests.
+
+Restart the client (or `/reload` after the first copy). Open settings with `/ft` or `/forevertools`. `/fp` and `/foreverparty` still work.
 
 If the addon shows as out of date, enable **Load out of date AddOns**. The TOC targets Forever beta `16001` (and `120105`).
 
@@ -32,8 +34,30 @@ If the addon shows as out of date, enable **Load out of date AddOns**. The TOC t
 | Repair gear | On |
 | Prefer guild funds | Off |
 | Print summary in chat | On |
+| Auto-accept quests | On |
+| Share quests with party | On |
+| Auto-turn-in quests | On |
+| Announce objectives | On |
 
-Hold **Shift** when opening a vendor or corpse to skip automation once.
+Hold **Shift** when opening a vendor, corpse, or quest NPC to skip automation once.
+
+## Party (from ForeverParty)
+
+- Auto-accepts quests from NPCs and from party shares.
+- Shares a quest **once** when you pick it up from an NPC — not from a party share, and not again while it is in your log.
+- Announces in party/raid chat when a quest objective is full.
+- Auto-turns in when you talk to the NPC. If there is more than one reward, it stops so you can choose.
+
+If `ForeverPartyDB` is still loaded (ForeverParty enabled for one session), those four toggles copy into `ForeverToolsDB` before defaults fill in.
+
+```
+/fp                 open options (same as /ft)
+/fp status          print party toggles
+/fp accept          toggle auto-accept
+/fp share           toggle auto-share
+/fp turnin          toggle auto-turn-in
+/fp announce        toggle objective chat
+```
 
 ## Sell junk
 
@@ -43,11 +67,7 @@ Opens a vendor → greys are sold automatically. This uses the same `C_MerchantF
 
 Each release is committed on `main` and snapshotted on a `vX.Y.Z` branch. The TOC `Version` field matches that snapshot.
 
-## Scope (v1)
-
-In scope: fast loot, grey sell, repair, classic options panel.
-
-Out of scope: auto-quest, auto-gossip, auto-res, minimap button, selling greens/whites, combat meters.
+Repo: [ggwalsh/ForeverTools](https://github.com/ggwalsh/ForeverTools)
 
 ## Author
 
