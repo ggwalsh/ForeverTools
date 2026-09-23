@@ -2,7 +2,7 @@
 
 World of Warcraft: Forever addon — fast loot, sell junk, auto-repair, party quests.
 
-Version **1.1.1**. No libraries. Event-driven only. Two files.
+Version **1.1.2**. No libraries. Event-driven only. Two files.
 
 ## Install
 
@@ -17,9 +17,7 @@ The folder must contain only:
 - `ForeverTools.toc`
 - `ForeverTools.lua`
 
-**Disable or delete `Interface/AddOns/ForeverParty`.** Those features now live in ForeverTools. Leaving both enabled double-accepts quests.
-
-Restart the client (or `/reload` after the first copy). Open settings with `/ft` or `/forevertools`. `/fp` and `/foreverparty` still work.
+Restart the client (or `/reload` after the first copy). Open settings with `/ft` or `/forevertools`. `/fp` opens the same panel.
 
 If the addon shows as out of date, enable **Load out of date AddOns**. The TOC targets Forever beta `16001` (and `120105`).
 
@@ -41,14 +39,12 @@ If the addon shows as out of date, enable **Load out of date AddOns**. The TOC t
 
 Hold **Shift** when opening a vendor, corpse, or quest NPC to skip automation once.
 
-## Party (from ForeverParty)
+## Party
 
 - Auto-accepts quests from NPCs and from party shares.
 - Shares a quest **once** when you pick it up from an NPC — not from a party share, and not again while it is in your log.
 - Announces in party/raid chat when a quest objective is full.
 - Auto-turns in when you talk to the NPC. If there is more than one reward, it stops so you can choose.
-
-If `ForeverPartyDB` is still loaded (ForeverParty enabled for one session), those four toggles copy into `ForeverToolsDB` before defaults fill in.
 
 ```
 /fp                 open options (same as /ft)

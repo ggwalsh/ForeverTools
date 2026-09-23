@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.2 — 2026-09-22
+
+- Party quests stay in ForeverTools. Dropped the extra slash command and the saved-settings import from the other party addon.
+
 ## 1.1.1 — 2026-09-22
 
 - Junk summary uses each item's vendor price (stack included), not the change in your gold
@@ -8,10 +12,8 @@
 
 ## 1.1.0 — 2026-09-22
 
-- ForeverParty is now a Party section in ForeverTools (still two files, no libraries)
-- Auto-accept NPC and party quests; share once from NPC pickup; auto-turn-in (stops on multiple rewards); announce full objectives in party/raid
-- Hold Shift at a quest NPC to skip. `/fp` and `/foreverparty` still work (`/fp accept|share|turnin|announce|status`)
-- Migrates `ForeverPartyDB` if that addon is still loaded; prints a reminder to disable the ForeverParty folder
+- Party section: auto-accept NPC and party quests; share once from NPC pickup; auto-turn-in (stops on multiple rewards); announce full objectives in party/raid
+- Hold Shift at a quest NPC to skip. `/fp accept|share|turnin|announce|status`
 - Master enable still unregisters every feature, including party
 
 ## 1.0.3 — 2026-09-21

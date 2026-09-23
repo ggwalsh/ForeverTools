@@ -1,4 +1,4 @@
--- ForeverTools 1.1.1. Forever beta Interface 16001; 120105 kept for Midnight-family clients.
+-- ForeverTools 1.1.2. Forever beta Interface 16001; 120105 kept for Midnight-family clients.
 
 local ADDON_NAME = "ForeverTools"
 local SELL_CAP, LOOT_TICK_MAX, TICK = 11, 40, 0.05
@@ -1249,30 +1249,9 @@ local function OnSlash(msg)
 	ToggleOptions()
 end
 
-local function ForeverPartyLoaded()
-	if C_AddOns and C_AddOns.IsAddOnLoaded then
-		local ok, v = pcall(C_AddOns.IsAddOnLoaded, "ForeverParty")
-		if ok and v then return true end
-	end
-	if type(IsAddOnLoaded) == "function" then
-		local ok, v = pcall(IsAddOnLoaded, "ForeverParty")
-		if ok and v then return true end
-	end
-	return false
-end
-
 local function OnAddonLoaded(name)
 	if name ~= ADDON_NAME then return end
 	if type(ForeverToolsDB) ~= "table" then ForeverToolsDB = {} end
-	if type(ForeverPartyDB) == "table" then
-		local keys = { "autoAccept", "autoShare", "autoTurnin", "announce" }
-		for i = 1, #keys do
-			local k = keys[i]
-			if ForeverToolsDB[k] == nil and ForeverPartyDB[k] ~= nil then
-				ForeverToolsDB[k] = not not ForeverPartyDB[k]
-			end
-		end
-	end
 	CopyDefaults(ForeverToolsDB, defaults)
 	if type(ForeverToolsDB.excludeIds) ~= "table" then ForeverToolsDB.excludeIds = {} end
 	db = ForeverToolsDB
@@ -1281,11 +1260,7 @@ local function OnAddonLoaded(name)
 	SLASH_FOREVERTOOLS1 = "/ft"
 	SLASH_FOREVERTOOLS2 = "/forevertools"
 	SLASH_FOREVERTOOLS3 = "/fp"
-	SLASH_FOREVERTOOLS4 = "/foreverparty"
 	SlashCmdList["FOREVERTOOLS"] = OnSlash
-	if ForeverPartyLoaded() then
-		Chat("Disable the ForeverParty addon folder — those features now live here.")
-	end
 end
 
 frame:RegisterEvent("ADDON_LOADED")
