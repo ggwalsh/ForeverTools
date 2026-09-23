@@ -1,4 +1,4 @@
--- ForeverTools 1.1.0. Forever beta Interface 16001; 120105 kept for Midnight-family clients.
+-- ForeverTools 1.1.1. Forever beta Interface 16001; 120105 kept for Midnight-family clients.
 
 local ADDON_NAME = "ForeverTools"
 local SELL_CAP, LOOT_TICK_MAX, TICK = 11, 40, 0.05
@@ -170,17 +170,34 @@ local function UseBagItem(bag, slot)
 	return false
 end
 
+local function UnpackSellPrice(fn, arg)
+	if type(fn) ~= "function" or arg == nil then return end
+	-- GetItemInfo / C_Item.GetItemInfo: sell price is the 11th return, not a table field.
+	local ok, a, _, _, _, _, _, _, _, _, _, sellPrice = pcall(fn, arg)
+	if not ok or a == nil then return end
+	if type(a) == "table" then return AsNumber(a.sellPrice or a.vendorPrice) end
+	return AsNumber(sellPrice)
+end
+
 local function ItemSellPrice(itemID, link)
-	if C_Item and C_Item.GetItemInfo then
-		local ok, info = pcall(C_Item.GetItemInfo, itemID or link)
-		if ok and type(info) == "table" then
-			local p = AsNumber(info.sellPrice)
-			if p then return p end
+	local cget = C_Item and C_Item.GetItemInfo
+	local price = UnpackSellPrice(cget, link or itemID) or UnpackSellPrice(cget, itemID)
+	if price ~= nil then return price end
+	price = UnpackSellPrice(GetItemInfo, link or itemID) or UnpackSellPrice(GetItemInfo, itemID)
+	return price
+end
+
+local function TooltipStackPrice(bag, slot)
+	if not (C_TooltipInfo and C_TooltipInfo.GetBagItem) then return end
+	local ok, data = pcall(C_TooltipInfo.GetBagItem, bag, slot)
+	if not ok or type(data) ~= "table" or type(data.lines) ~= "table" then return end
+	local sellType = Enum and Enum.TooltipDataLineType and Enum.TooltipDataLineType.SellPrice
+	for i = 1, #data.lines do
+		local line = data.lines[i]
+		if line and (not sellType or line.type == sellType) then
+			local price = AsNumber(line.price)
+			if price and price > 0 then return price end
 		end
-	end
-	if type(GetItemInfo) == "function" then
-		local ok, price = pcall(function() return select(11, GetItemInfo(itemID or link)) end)
-		if ok then return AsNumber(price) end
 	end
 end
 
@@ -232,12 +249,20 @@ local function IsMerchantArg(arg)
 	return false
 end
 
-local function PlayerMoney()
-	if type(GetMoney) == "function" then
-		local ok, m = pcall(GetMoney)
-		if ok then return AsNumber(m) or 0 end
+local function MoneyNow()
+	if type(GetMoney) ~= "function" then return end
+	local ok, m = pcall(GetMoney)
+	if not ok or m == nil then return end
+	if issecretvalue then
+		local okS, secret = pcall(issecretvalue, m)
+		if okS and secret then return end
 	end
-	return 0
+	local n = tonumber(m)
+	if n and n >= 0 then return n end
+end
+
+local function PlayerMoney()
+	return MoneyNow() or 0
 end
 
 local function HasExcludeIds()
@@ -397,13 +422,14 @@ local function DoRepair()
 	return result
 end
 
-local function CollectJunk()
+local function CollectJunk(cap)
 	local list = {}
 	if not db.sellJunk then return list end
 	local exclude = db.excludeIds or {}
+	cap = cap or SELL_CAP
 	for bag = 0, MaxBagIndex() do
 		for slot = 1, BagSlotCount(bag) do
-			if #list >= SELL_CAP then return list end
+			if #list >= cap then return list end
 			local info = BagItemInfo(bag, slot)
 			local id = SlotItemID(bag, slot, info)
 			local link = SlotLink(bag, slot, info)
@@ -411,14 +437,28 @@ local function CollectJunk()
 			if id and not exclude[id] and not (info and info.isLocked) then
 				if IsPoorQuality(id, link, info and info.quality) then
 					if not (info and info.hasNoValue) then
-						local price = info and info.sellPrice
-						if price == nil then price = ItemSellPrice(id, link) end
-						if price == nil or price > 0 then
-							local stacks = (info and info.stackCount) or 1
+						local stacks = (info and info.stackCount) or 1
+						local unit = info and info.sellPrice
+						if unit == nil or unit <= 0 then
+							local looked = ItemSellPrice(id, link)
+							if looked ~= nil then unit = looked end
+						end
+						local copper, priced, noValue
+						if unit ~= nil and unit <= 0 then noValue = true end
+						if unit and unit > 0 then copper, priced = unit * stacks, true end
+						if not priced then
+							local stackPrice = TooltipStackPrice(bag, slot)
+							if stackPrice and stackPrice > 0 then
+								copper, priced, noValue = stackPrice, true, false
+							end
+						end
+						if not noValue then
+							if not priced and C_Item and C_Item.RequestLoadItemDataByID then
+								pcall(C_Item.RequestLoadItemDataByID, id)
+							end
 							list[#list + 1] = {
-								bag = bag,
-								slot = slot,
-								copper = (price or 0) * stacks,
+								bag = bag, slot = slot, id = id, link = link,
+								stacks = stacks, copper = copper or 0, priced = priced,
 							}
 						end
 					end
@@ -427,6 +467,77 @@ local function CollectJunk()
 		end
 	end
 	return list
+end
+
+local function FillJunkPrices(list)
+	local missing = false
+	for i = 1, #list do
+		local item = list[i]
+		if not item.priced then
+			local unit = ItemSellPrice(item.id, item.link)
+			if unit and unit > 0 then
+				item.copper = unit * (item.stacks or 1)
+				item.priced = true
+			else
+				local stackPrice = TooltipStackPrice(item.bag, item.slot)
+				if stackPrice and stackPrice > 0 then
+					item.copper = stackPrice
+					item.priced = true
+				else
+					if C_Item and C_Item.RequestLoadItemDataByID and item.id then
+						pcall(C_Item.RequestLoadItemDataByID, item.id)
+					end
+					missing = true
+				end
+			end
+		end
+	end
+	return not missing
+end
+
+local function JunkNum()
+	if C_MerchantFrame and C_MerchantFrame.GetNumJunkItems then
+		local ok, n = pcall(C_MerchantFrame.GetNumJunkItems)
+		if ok then return AsNumber(n) end
+	end
+end
+
+local function SlotStill(item)
+	local info = BagItemInfo(item.bag, item.slot)
+	return SlotItemID(item.bag, item.slot, info) == item.id
+end
+
+local function TallySold(list, moneyBefore, junkBefore)
+	local count, copper, unpriced = 0, 0, 0
+	for i = 1, #list do
+		local item = list[i]
+		if not SlotStill(item) then
+			count = count + 1
+			if not item.priced then
+				local unit = ItemSellPrice(item.id, item.link)
+				if unit and unit > 0 then
+					item.copper = unit * (item.stacks or 1)
+					item.priced = true
+				end
+			end
+			if item.priced and item.copper > 0 then
+				copper = copper + item.copper
+			else
+				unpriced = unpriced + 1
+			end
+		end
+	end
+	if count == 0 and junkBefore then
+		local now = JunkNum()
+		if now and junkBefore > now then count = junkBefore - now end
+	end
+	if unpriced > 0 or copper <= 0 then
+		local after = MoneyNow()
+		if moneyBefore and after and after > moneyBefore then
+			copper = after - moneyBefore
+		end
+	end
+	return count, copper
 end
 
 local function PrintSummary(repairedCopper, soldCount, soldCopper, unaffordable)
@@ -439,7 +550,11 @@ local function PrintSummary(repairedCopper, soldCount, soldCopper, unaffordable)
 		parts[#parts + 1] = "cannot afford repair"
 	end
 	if soldCount > 0 then
-		parts[#parts + 1] = "Sold " .. soldCount .. " junk for " .. CoinString(soldCopper)
+		if soldCopper and soldCopper > 0 then
+			parts[#parts + 1] = "Sold " .. soldCount .. " junk for " .. CoinString(soldCopper)
+		else
+			parts[#parts + 1] = "Sold " .. soldCount .. " junk"
+		end
 	end
 	Chat(table.concat(parts, ". ") .. ".")
 end
@@ -510,7 +625,6 @@ local function OnMerchantShow()
 	local gen = sellGeneration
 	sellBusy = true
 	local repairInfo = DoRepair()
-	local moneyBefore = PlayerMoney()
 
 	local function finish(count, copper)
 		if gen ~= sellGeneration then return end
@@ -518,35 +632,26 @@ local function OnMerchantShow()
 		PrintSummary(repairInfo.copper, count or 0, copper or 0, repairInfo.unaffordable)
 	end
 
-	local function finishFromMoney(hint)
-		local gained = math.max(0, PlayerMoney() - moneyBefore)
-		local n = hint or 0
-		if n <= 0 and gained > 0 then n = 1 end
-		finish(n, gained)
-	end
-
-	local function sellPerItem(list)
-		local soldCount, soldCopper = 0, 0
+	local function sellPerItem(list, moneyBefore, junkBefore)
 		local function take(item)
-			if UseBagItem(item.bag, item.slot) then
-				soldCount = soldCount + 1
-				soldCopper = soldCopper + (item.copper or 0)
-			end
+			return UseBagItem(item.bag, item.slot)
+		end
+		local function afterItems(tries)
+			tries = tries or 1
+			After(0.2, function()
+				if gen ~= sellGeneration then return end
+				FillJunkPrices(list)
+				local count, copper = TallySold(list, moneyBefore, junkBefore)
+				if count > 0 and copper <= 0 and tries < 3 then
+					After(0.35, function() afterItems(tries + 1) end)
+					return
+				end
+				finish(count, copper)
+			end)
 		end
 		if #list == 0 then
-			if not HasExcludeIds() and SellAllJunkNow() then
-				After(0.35, function() finishFromMoney(1) end)
-				return
-			end
 			finish(0, 0)
 			return
-		end
-		local function afterItems()
-			if merchantOpen and soldCount == 0 and not HasExcludeIds() and SellAllJunkNow() then
-				After(0.35, function() finishFromMoney(#list) end)
-				return
-			end
-			finish(soldCount, soldCopper)
 		end
 		local function sellOne(i)
 			if gen ~= sellGeneration or not MerchantIsOpen() then
@@ -561,7 +666,7 @@ local function OnMerchantShow()
 		After(TICK, function() sellOne(1) end)
 	end
 
-	local function runSell()
+	local function runSell(attempt)
 		if gen ~= sellGeneration or not merchantOpen then
 			sellBusy = false
 			return
@@ -570,21 +675,33 @@ local function OnMerchantShow()
 			finish(0, 0)
 			return
 		end
-		if not HasExcludeIds() and SellAllJunkNow() then
-			After(0.35, function()
-				if gen ~= sellGeneration then return end
-				if PlayerMoney() > moneyBefore then
-					finishFromMoney(1)
-					return
-				end
-				sellPerItem(CollectJunk())
-			end)
+		local useAll = not HasExcludeIds()
+		local list = CollectJunk(useAll and 999 or SELL_CAP)
+		if not FillJunkPrices(list) and attempt < 3 then
+			After(0.35, function() runSell(attempt + 1) end)
 			return
 		end
-		sellPerItem(CollectJunk())
+		local moneyBefore = MoneyNow()
+		local junkBefore = JunkNum()
+		local function summarize(tries)
+			tries = tries or 1
+			if gen ~= sellGeneration then return end
+			FillJunkPrices(list)
+			local count, copper = TallySold(list, moneyBefore, junkBefore)
+			if count > 0 and copper <= 0 and tries < 3 then
+				After(0.35, function() summarize(tries + 1) end)
+				return
+			end
+			finish(count, copper)
+		end
+		if useAll and SellAllJunkNow() then
+			After(0.35, summarize)
+			return
+		end
+		sellPerItem(list, moneyBefore, junkBefore)
 	end
 
-	After(0.25, runSell)
+	After(0.25, function() runSell(1) end)
 end
 
 local function OnMerchantClosed()

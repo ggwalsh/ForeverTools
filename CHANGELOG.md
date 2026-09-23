@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.1 — 2026-09-22
+
+- Junk summary uses each item's vendor price (stack included), not the change in your gold
+- No more "Sold 1 junk for 0c" when repair or a secret gold value hid the real amount
+- Counts the greys that actually left your bags
+
 ## 1.1.0 — 2026-09-22
 
 - ForeverParty is now a Party section in ForeverTools (still two files, no libraries)
