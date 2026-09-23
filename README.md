@@ -2,7 +2,7 @@
 
 World of Warcraft: Forever addon — fast loot, sell junk, auto-repair, party quests, invites, tooltips.
 
-Version **1.2.0**. No libraries. Event-driven only. Two files.
+Version **1.2.1**. No libraries. Event-driven only. Two files.
 
 ## Install
 
@@ -38,6 +38,7 @@ If the addon shows as out of date, enable **Load out of date AddOns**. The TOC t
 | Announce objectives | On |
 | Accept guild invites | On |
 | Accept friend invites | On |
+| Auto-invite on whisper | On |
 | Tooltips at cursor | On |
 | Detailed tooltips | On |
 | Show spell, item, and NPC IDs | On |
@@ -51,8 +52,9 @@ Hold **Shift** when opening a vendor, corpse, or quest NPC to skip automation on
 - Announces in party/raid chat when a quest objective is full.
 - Auto-turns in when you talk to the NPC. If there is more than one reward, it stops so you can choose.
 - Accepts a manual group invite from a guild member or a character friend. Each has its own checkbox. Invites are left alone if you are already in a group.
+- Whispers that are exactly a keyword send a group invite. Default keyword is `invite`. Change the list in `/ft` (comma separated), for example `invite, inv`. Matching ignores case. `invite!` counts. A longer sentence does not, unless you add that whole phrase as a keyword. Ignored players are skipped.
 
-`/fp` opens options. `/fp accept`, `/fp share`, `/fp turnin`, `/fp announce`, and `/fp status` toggle the quest options.
+`/fp` opens options. `/fp accept`, `/fp share`, `/fp turnin`, `/fp announce`, `/fp invite`, and `/fp status` toggle those options.
 
 ## Tooltips
 

@@ -1,4 +1,4 @@
--- ForeverTools 1.2.0. Forever beta Interface 16001; 120105 kept for Midnight-family clients.
+-- ForeverTools 1.2.1. Forever beta Interface 16001; 120105 kept for Midnight-family clients.
 
 local ADDON_NAME = "ForeverTools"
 local SELL_CAP, LOOT_TICK_MAX, TICK = 11, 40, 0.05
@@ -25,6 +25,8 @@ local defaults = {
 	announce = true,
 	acceptGuild = true,
 	acceptFriends = true,
+	autoInvite = true,
+	inviteKeywords = "invite",
 	cursorTooltip = true,
 	detailedTips = true,
 	showIds = true,
@@ -282,6 +284,7 @@ local FEATURE_EVENTS = {
 	"QUEST_ACCEPTED", "QUEST_PROGRESS", "QUEST_COMPLETE",
 	"QUEST_WATCH_UPDATE", "QUEST_LOG_UPDATE", "UNIT_QUEST_LOG_CHANGED",
 	"PARTY_INVITE_REQUEST",
+	"CHAT_MSG_WHISPER",
 }
 
 local function ApplyEventRegistration()
@@ -300,6 +303,7 @@ local function ApplyEventRegistration()
 		reg("QUEST_WATCH_UPDATE") reg("QUEST_LOG_UPDATE") reg("UNIT_QUEST_LOG_CHANGED")
 	end
 	if db.acceptGuild or db.acceptFriends then reg("PARTY_INVITE_REQUEST") end
+	if db.autoInvite then reg("CHAT_MSG_WHISPER") end
 end
 
 local function CVarAutoLootOn()
@@ -1241,6 +1245,77 @@ local function ApplyDetailedTips()
 	pcall(SetCVar, "UberTooltips", db.detailedTips and "1" or "0")
 end
 
+local recentInvite = {}
+
+local function KeywordSet()
+	local text = db and db.inviteKeywords
+	if type(text) ~= "string" or text:gsub("%s", "") == "" then text = "invite" end
+	local set = {}
+	for word in text:gmatch("[^,]+") do
+		word = word:lower():gsub("^%s+", ""):gsub("%s+$", "")
+		word = word:gsub("[%.%!%?]+$", "")
+		if word ~= "" then set[word] = true end
+	end
+	if not next(set) then set.invite = true end
+	return set
+end
+
+local function WhisperIsKeyword(msg)
+	if type(msg) ~= "string" then return false end
+	msg = msg:lower():gsub("^%s+", ""):gsub("%s+$", "")
+	msg = msg:gsub("[%.%!%?]+$", "")
+	if msg == "" then return false end
+	return KeywordSet()[msg] == true
+end
+
+local function IsIgnoredName(name)
+	if C_FriendList and C_FriendList.IsIgnored then
+		local ok, v = pcall(C_FriendList.IsIgnored, name)
+		if ok and v then return true end
+	end
+	if type(IsIgnored) == "function" then
+		local ok, v = pcall(IsIgnored, name)
+		if ok and v then return true end
+	end
+	return false
+end
+
+local function AlreadyGrouped(name)
+	if type(UnitInParty) == "function" then
+		local ok, v = pcall(UnitInParty, name)
+		if ok and v then return true end
+	end
+	if type(UnitInRaid) == "function" then
+		local ok, v = pcall(UnitInRaid, name)
+		if ok and v then return true end
+	end
+	return false
+end
+
+local function InviteByWhisper(sender)
+	if C_PartyInfo and C_PartyInfo.InviteUnit then
+		if SafeCall(C_PartyInfo.InviteUnit, sender) then return true end
+	end
+	if type(InviteUnit) == "function" then
+		return SafeCall(InviteUnit, sender)
+	end
+	return false
+end
+
+local function OnWhisper(msg, sender)
+	if not db or not db.enabled or not db.autoInvite then return end
+	if type(sender) ~= "string" or sender == "" then return end
+	if not WhisperIsKeyword(msg) then return end
+	if SamePlayer(UnitName and UnitName("player"), sender) then return end
+	if IsIgnoredName(sender) or AlreadyGrouped(sender) then return end
+	local now = type(GetTime) == "function" and GetTime() or 0
+	if recentInvite[sender] and (now - recentInvite[sender]) < 8 then return end
+	recentInvite[sender] = now
+	if InviteByWhisper(sender) then
+		Chat("Invited " .. (ShortName(sender) or sender) .. ".")
+	end
+end
+
 local function CreateOptions()
 	if optionsFrame then return optionsFrame end
 	local template = BackdropTemplateMixin and "BackdropTemplate" or nil
@@ -1372,6 +1447,39 @@ local function CreateOptions()
 	local cAnn = AddCheck("Announce objectives", "announce", "Print in party or raid chat when a quest objective is full.")
 	local cGuildInv = AddCheck("Accept guild invites", "acceptGuild", "Join a manual group invite from a guild member. Skipped if you are already in a group. Uncheck to decide those yourself.")
 	local cFriendInv = AddCheck("Accept friend invites", "acceptFriends", "Join a manual group invite from a character friend. Skipped if you are already in a group. Uncheck to decide those yourself.")
+	local cAutoInv = AddCheck("Auto-invite on whisper", "autoInvite", "Invite a player who whispers a keyword. The whole message must match. Ignored players are skipped.")
+
+	local kwLabel = child:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	kwLabel:SetPoint("TOPLEFT", 16, y)
+	kwLabel:SetText("Invite keywords (comma separated)")
+	y = y - 22
+	local kwEdit
+	local okKw, madeKw = pcall(CreateFrame, "EditBox", "ForeverToolsKeywordBox", child, "InputBoxTemplate")
+	if okKw and madeKw then
+		kwEdit = madeKw
+	else
+		kwEdit = CreateFrame("EditBox", "ForeverToolsKeywordBox", child)
+	end
+	kwEdit:SetAutoFocus(false)
+	kwEdit:SetSize(320, 20)
+	kwEdit:SetPoint("TOPLEFT", 20, y)
+	kwEdit:SetFontObject(ChatFontNormal or GameFontHighlight)
+	if kwEdit.SetTextInsets then kwEdit:SetTextInsets(4, 4, 0, 0) end
+	local function CommitKeywords(self)
+		local text = (self:GetText() or ""):gsub("^%s+", ""):gsub("%s+$", "")
+		if text == "" then text = "invite" end
+		db.inviteKeywords = text
+		self:SetText(text)
+		self:ClearFocus()
+	end
+	kwEdit:SetScript("OnEnterPressed", CommitKeywords)
+	kwEdit:SetScript("OnEditFocusLost", CommitKeywords)
+	kwEdit:SetScript("OnEscapePressed", function(self)
+		self:SetText(db.inviteKeywords or "invite")
+		self:ClearFocus()
+	end)
+	SetTooltip(kwEdit, "Whispers that match one of these, ignoring case, send a group invite. Default is invite. Example: invite, inv")
+	y = y - 36
 
 	AddHeader("Tooltips")
 	local cCursor = AddCheck("Tooltips at cursor", "cursorTooltip", "Show the default tooltip beside the mouse instead of the bottom-right corner.")
@@ -1390,13 +1498,14 @@ local function CreateOptions()
 	y = y - 40
 	child:SetHeight(math.max(400, -y + 16))
 
-	local checks = { cFast, cCVar, cSell, cRepair, cGuild, cSum, cAccept, cShare, cTurn, cAnn, cGuildInv, cFriendInv, cCursor, cDetail, cIds, cEnable }
+	local checks = { cFast, cCVar, cSell, cRepair, cGuild, cSum, cAccept, cShare, cTurn, cAnn, cGuildInv, cFriendInv, cAutoInv, cCursor, cDetail, cIds, cEnable }
 	panel:SetScript("OnShow", function()
 		for i = 1, #checks do
 			local c = checks[i]
 			if c and c._dbKey then c:SetChecked(not not db[c._dbKey]) end
 		end
 		edit:SetText(ExcludeToText(db.excludeIds))
+		kwEdit:SetText(db.inviteKeywords or "invite")
 	end)
 
 	optionsFrame = panel
@@ -1415,6 +1524,7 @@ local PARTY_SLASH = {
 	turn = { "autoTurnin", "auto-turn-in" },
 	announce = { "announce", "objective announce" },
 	say = { "announce", "objective announce" },
+	invite = { "autoInvite", "auto-invite" },
 }
 
 local function PartyStatus()
@@ -1449,6 +1559,9 @@ local function OnAddonLoaded(name)
 	if type(ForeverToolsDB) ~= "table" then ForeverToolsDB = {} end
 	CopyDefaults(ForeverToolsDB, defaults)
 	if type(ForeverToolsDB.excludeIds) ~= "table" then ForeverToolsDB.excludeIds = {} end
+	if type(ForeverToolsDB.inviteKeywords) ~= "string" or ForeverToolsDB.inviteKeywords == "" then
+		ForeverToolsDB.inviteKeywords = "invite"
+	end
 	db = ForeverToolsDB
 	ApplyEventRegistration()
 	HookJunkConfirm()
@@ -1495,5 +1608,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
 		OnQuestEvent(event, arg1, arg2)
 	elseif event == "PARTY_INVITE_REQUEST" then
 		OnPartyInvite(...)
+	elseif event == "CHAT_MSG_WHISPER" then
+		OnWhisper(arg1, arg2)
 	end
 end)

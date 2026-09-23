@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.1 — 2026-09-23
+
+- Auto-invite when someone whispers a keyword. Default keyword is `invite`
+- Keyword list is editable in the options panel (comma separated)
+- Ignored players and people already in the group are skipped
+
 ## 1.2.0 — 2026-09-23
 
 - Accept guild invites and accept friend invites, each with its own checkbox. Skipped if you are already in a group.
