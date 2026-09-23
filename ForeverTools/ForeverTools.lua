@@ -1,4 +1,4 @@
--- ForeverTools 1.1.2. Forever beta Interface 16001; 120105 kept for Midnight-family clients.
+-- ForeverTools 1.2.0. Forever beta Interface 16001; 120105 kept for Midnight-family clients.
 
 local ADDON_NAME = "ForeverTools"
 local SELL_CAP, LOOT_TICK_MAX, TICK = 11, 40, 0.05
@@ -23,6 +23,11 @@ local defaults = {
 	autoShare = true,
 	autoTurnin = true,
 	announce = true,
+	acceptGuild = true,
+	acceptFriends = true,
+	cursorTooltip = true,
+	detailedTips = true,
+	showIds = true,
 }
 
 local frame = CreateFrame("Frame", "ForeverToolsFrame")
@@ -276,6 +281,7 @@ local FEATURE_EVENTS = {
 	"QUEST_DETAIL", "QUEST_ACCEPT_CONFIRM", "GOSSIP_SHOW", "QUEST_GREETING",
 	"QUEST_ACCEPTED", "QUEST_PROGRESS", "QUEST_COMPLETE",
 	"QUEST_WATCH_UPDATE", "QUEST_LOG_UPDATE", "UNIT_QUEST_LOG_CHANGED",
+	"PARTY_INVITE_REQUEST",
 }
 
 local function ApplyEventRegistration()
@@ -293,6 +299,7 @@ local function ApplyEventRegistration()
 		reg("QUEST_ACCEPTED") reg("QUEST_PROGRESS") reg("QUEST_COMPLETE")
 		reg("QUEST_WATCH_UPDATE") reg("QUEST_LOG_UPDATE") reg("UNIT_QUEST_LOG_CHANGED")
 	end
+	if db.acceptGuild or db.acceptFriends then reg("PARTY_INVITE_REQUEST") end
 end
 
 local function CVarAutoLootOn()
@@ -1054,6 +1061,186 @@ local function SetTooltip(widget, text)
 	end)
 end
 
+local function ShortName(name)
+	if type(name) ~= "string" or name == "" then return end
+	return name:match("^([^%-]+)") or name
+end
+
+local function SamePlayer(a, b)
+	a, b = ShortName(a), ShortName(b)
+	return a and b and a:lower() == b:lower()
+end
+
+local function IsFriendPlayer(name, guid)
+	if guid and C_FriendList and C_FriendList.IsFriend then
+		local ok, v = pcall(C_FriendList.IsFriend, guid)
+		if ok and v then return true end
+	end
+	if not (C_FriendList and C_FriendList.GetNumFriends and C_FriendList.GetFriendInfoByIndex) then
+		return false
+	end
+	local okN, num = pcall(C_FriendList.GetNumFriends)
+	num = AsNumber(num) or 0
+	if not okN or num <= 0 then return false end
+	for i = 1, num do
+		local ok, info = pcall(C_FriendList.GetFriendInfoByIndex, i)
+		local fname = ok and ((type(info) == "table" and info.name) or info) or nil
+		if SamePlayer(fname, name) then return true end
+	end
+	return false
+end
+
+local function GuildRosterNameGuid(index)
+	if C_GuildInfo and C_GuildInfo.GetGuildRosterInfo then
+		local ok, info = pcall(C_GuildInfo.GetGuildRosterInfo, index)
+		if ok and type(info) == "table" then return info.name, info.guid end
+	end
+	if type(GetGuildRosterInfo) == "function" then
+		local ok, name = pcall(GetGuildRosterInfo, index)
+		if ok then return name end
+	end
+end
+
+local function IsGuildPlayer(name, guid)
+	if not (IsInGuild and IsInGuild()) then return false end
+	local n = 0
+	if type(GetNumGuildMembers) == "function" then
+		local ok, count = pcall(GetNumGuildMembers)
+		if ok then n = AsNumber(count) or 0 end
+	end
+	for i = 1, n do
+		local gname, gguid = GuildRosterNameGuid(i)
+		if guid and gguid and guid == gguid then return true end
+		if SamePlayer(gname, name) then return true end
+	end
+	return false
+end
+
+local function HidePartyPopup()
+	if type(StaticPopup_Hide) ~= "function" then return end
+	pcall(StaticPopup_Hide, "PARTY_INVITE")
+	pcall(StaticPopup_Hide, "PARTY_INVITE_XREALM")
+end
+
+local function AcceptGroupInvite(name)
+	if type(AcceptGroup) == "function" then pcall(AcceptGroup) end
+	HidePartyPopup()
+	After(0, HidePartyPopup)
+	After(0.2, HidePartyPopup)
+	local who = ShortName(name)
+	if who then Chat("Joined " .. who .. "'s group.") end
+end
+
+local inviteWait = false
+local function OnPartyInvite(...)
+	if not db or not db.enabled then return end
+	if not db.acceptGuild and not db.acceptFriends then return end
+	if IsInGroup and IsInGroup() then return end
+	local name = ...
+	if type(name) ~= "string" then name = nil end
+	local guid
+	for i = 1, select("#", ...) do
+		local v = select(i, ...)
+		if type(v) == "string" and v:find("^Player%-", 1) then guid = v break end
+	end
+	local friend = db.acceptFriends and IsFriendPlayer(name, guid)
+	local guild = db.acceptGuild and IsGuildPlayer(name, guid)
+	if friend or guild then
+		AcceptGroupInvite(name)
+		return
+	end
+	if inviteWait or not db.acceptGuild or not (IsInGuild and IsInGuild()) then return end
+	local n = type(GetNumGuildMembers) == "function" and GetNumGuildMembers() or 0
+	if n ~= 0 then return end
+	inviteWait = true
+	if C_GuildInfo and C_GuildInfo.GuildRoster then pcall(C_GuildInfo.GuildRoster) end
+	After(0.7, function()
+		inviteWait = false
+		if not db or not db.enabled or not db.acceptGuild then return end
+		if IsInGroup and IsInGroup() then return end
+		if IsGuildPlayer(name, guid) then AcceptGroupInvite(name) end
+	end)
+end
+
+local function IdFromGuid(guid)
+	if type(guid) ~= "string" or type(strsplit) ~= "function" then return end
+	local kind, _, _, _, _, id = strsplit("-", guid)
+	if kind == "Creature" or kind == "Vehicle" then return tonumber(id) end
+end
+
+local function TipAdd(tooltip, text)
+	if not tooltip or not tooltip.AddLine then return end
+	local name = tooltip.GetName and tooltip:GetName()
+	if name and tooltip.NumLines then
+		for i = 1, tooltip:NumLines() or 0 do
+			local fs = _G[name .. "TextLeft" .. i]
+			if fs and fs.GetText and fs:GetText() == text then return end
+		end
+	end
+	tooltip:AddLine(text, 0.62, 0.62, 0.62)
+end
+
+local tipsHooked = false
+local function ApplyTooltipHooks()
+	if tipsHooked then return end
+	if type(hooksecurefunc) == "function" and type(GameTooltip_SetDefaultAnchor) == "function" then
+		hooksecurefunc("GameTooltip_SetDefaultAnchor", function(tooltip, parent)
+			if not db or not db.enabled or not db.cursorTooltip or not tooltip or not tooltip.SetOwner then return end
+			tooltip:SetOwner(parent or UIParent, "ANCHOR_CURSOR")
+			tooltip.default = 1
+		end)
+	end
+	if GameTooltip and GameTooltip.HookScript then
+		pcall(GameTooltip.HookScript, GameTooltip, "OnUpdate", function(self)
+			if not db or not db.enabled or not db.cursorTooltip or not self.default or not self:IsShown() then return end
+			if type(GetCursorPosition) ~= "function" then return end
+			local x, y = GetCursorPosition()
+			local scale = self:GetEffectiveScale()
+			if not x or not scale or scale == 0 then return end
+			self:ClearAllPoints()
+			self:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", x / scale + 24, y / scale + 24)
+		end)
+	end
+	local function consider(tooltip, label, id)
+		if not db or not db.enabled or not db.showIds then return end
+		id = tonumber(id)
+		if not id then return end
+		TipAdd(tooltip, label .. " ID: " .. id)
+	end
+	if TooltipDataProcessor and TooltipDataProcessor.AddTooltipPostCall and Enum and Enum.TooltipDataType then
+		local map = {
+			{ Enum.TooltipDataType.Spell, "Spell", false },
+			{ Enum.TooltipDataType.Item, "Item", false },
+			{ Enum.TooltipDataType.Unit, "NPC", true },
+		}
+		for i = 1, #map do
+			local dataType, label, fromGuid = map[i][1], map[i][2], map[i][3]
+			if dataType then
+				pcall(TooltipDataProcessor.AddTooltipPostCall, dataType, function(tooltip, data)
+					if type(data) ~= "table" then return end
+					local id = fromGuid and (IdFromGuid(data.guid) or tonumber(data.id)) or tonumber(data.id)
+					consider(tooltip, label, id)
+				end)
+			end
+		end
+	elseif GameTooltip and GameTooltip.HookScript then
+		GameTooltip:HookScript("OnTooltipSetSpell", function(self)
+			local ok, _, id = pcall(self.GetSpell, self)
+			if ok then consider(self, "Spell", id) end
+		end)
+		GameTooltip:HookScript("OnTooltipSetItem", function(self)
+			local ok, _, link = pcall(self.GetItem, self)
+			if ok and type(link) == "string" then consider(self, "Item", link:match("item:(%d+)")) end
+		end)
+	end
+	tipsHooked = true
+end
+
+local function ApplyDetailedTips()
+	if not db or type(SetCVar) ~= "function" then return end
+	pcall(SetCVar, "UberTooltips", db.detailedTips and "1" or "0")
+end
+
 local function CreateOptions()
 	if optionsFrame then return optionsFrame end
 	local template = BackdropTemplateMixin and "BackdropTemplate" or nil
@@ -1122,6 +1309,7 @@ local function CreateOptions()
 			db[key] = not not checked
 			PlayCheckSound(checked)
 			ApplyEventRegistration()
+			if key == "detailedTips" then ApplyDetailedTips() end
 		end)
 		SetTooltip(btn, tip)
 		btn._dbKey = key
@@ -1182,6 +1370,13 @@ local function CreateOptions()
 	local cShare = AddCheck("Share quests with party", "autoShare", "Push a quest once when you pick it up from an NPC. Does not re-share party quests.")
 	local cTurn = AddCheck("Auto-turn-in quests", "autoTurnin", "Turn in completed quests. Stops if you must choose a reward. Hold Shift to skip.")
 	local cAnn = AddCheck("Announce objectives", "announce", "Print in party or raid chat when a quest objective is full.")
+	local cGuildInv = AddCheck("Accept guild invites", "acceptGuild", "Join a manual group invite from a guild member. Skipped if you are already in a group. Uncheck to decide those yourself.")
+	local cFriendInv = AddCheck("Accept friend invites", "acceptFriends", "Join a manual group invite from a character friend. Skipped if you are already in a group. Uncheck to decide those yourself.")
+
+	AddHeader("Tooltips")
+	local cCursor = AddCheck("Tooltips at cursor", "cursorTooltip", "Show the default tooltip beside the mouse instead of the bottom-right corner.")
+	local cDetail = AddCheck("Detailed tooltips", "detailedTips", "Turns on the game's enhanced tooltips: cost, range, cast time, and the spell text with its damage numbers. Does not add a spell-power formula.")
+	local cIds = AddCheck("Show spell, item, and NPC IDs", "showIds", "Adds the spell, item, or NPC ID to the bottom of the tooltip.")
 
 	AddHeader("General")
 	local cEnable = AddCheck("Enable ForeverTools", "enabled", "Master switch. Turns off all events when unchecked.")
@@ -1195,7 +1390,7 @@ local function CreateOptions()
 	y = y - 40
 	child:SetHeight(math.max(400, -y + 16))
 
-	local checks = { cFast, cCVar, cSell, cRepair, cGuild, cSum, cAccept, cShare, cTurn, cAnn, cEnable }
+	local checks = { cFast, cCVar, cSell, cRepair, cGuild, cSum, cAccept, cShare, cTurn, cAnn, cGuildInv, cFriendInv, cCursor, cDetail, cIds, cEnable }
 	panel:SetScript("OnShow", function()
 		for i = 1, #checks do
 			local c = checks[i]
@@ -1257,6 +1452,14 @@ local function OnAddonLoaded(name)
 	db = ForeverToolsDB
 	ApplyEventRegistration()
 	HookJunkConfirm()
+	ApplyTooltipHooks()
+	ApplyDetailedTips()
+	if C_FriendList and C_FriendList.ShowFriends then pcall(C_FriendList.ShowFriends) end
+	if C_GuildInfo and C_GuildInfo.GuildRoster then
+		pcall(C_GuildInfo.GuildRoster)
+	elseif type(GuildRoster) == "function" then
+		pcall(GuildRoster)
+	end
 	SLASH_FOREVERTOOLS1 = "/ft"
 	SLASH_FOREVERTOOLS2 = "/forevertools"
 	SLASH_FOREVERTOOLS3 = "/fp"
@@ -1264,7 +1467,8 @@ local function OnAddonLoaded(name)
 end
 
 frame:RegisterEvent("ADDON_LOADED")
-frame:SetScript("OnEvent", function(_, event, arg1, arg2)
+frame:SetScript("OnEvent", function(_, event, ...)
+	local arg1, arg2 = ...
 	if event == "ADDON_LOADED" then
 		OnAddonLoaded(arg1)
 		if arg1 == "Blizzard_UIPanels_Game" then HookJunkConfirm() end
@@ -1289,5 +1493,7 @@ frame:SetScript("OnEvent", function(_, event, arg1, arg2)
 		or event == "QUEST_COMPLETE" or event == "QUEST_WATCH_UPDATE" or event == "QUEST_LOG_UPDATE"
 		or event == "UNIT_QUEST_LOG_CHANGED" then
 		OnQuestEvent(event, arg1, arg2)
+	elseif event == "PARTY_INVITE_REQUEST" then
+		OnPartyInvite(...)
 	end
 end)

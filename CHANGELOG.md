@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.0 — 2026-09-23
+
+- Accept guild invites and accept friend invites, each with its own checkbox. Skipped if you are already in a group.
+- Tooltips at cursor, instead of the bottom-right corner
+- Detailed tooltips toggle (the game's enhanced tooltip). Spell-power formulas are not available from the API
+- Spell, item, and NPC IDs on tooltips
+
 ## 1.1.2 — 2026-09-22
 
 - Party quests stay in ForeverTools. Dropped the extra slash command and the saved-settings import from the other party addon.
